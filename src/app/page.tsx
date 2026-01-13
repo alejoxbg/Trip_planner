@@ -10,7 +10,24 @@ import { fetchOsrmRoute, fetchOsrmRouteWithSteps, fetchOsrmTableDurations } from
 import { twoOptImprove } from "@/app/lib/optimizer/tsp";
 import { clearAllData, loadPlaces, loadPlan, loadSettings, savePlaces, savePlan, saveSettings } from "@/app/lib/storage";
 import type { Place, PlaceKind } from "@/app/lib/types";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  useDroppable,
+  type DragEndEvent,
+  type DragStartEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 
 type TravelMode = "driving" | "walking" | "cycling" | "transit" | "flight";
 type DayWindow = { start: string; end: string };
@@ -118,6 +135,125 @@ export default function Home() {
   useEffect(() => {
     saveSettings({ dayStart, dayEnd, defaultPlaceDurationMin, defaultAirportDurationMin, defaultTravelMode, language });
   }, [dayStart, dayEnd, defaultPlaceDurationMin, defaultAirportDurationMin, defaultTravelMode, language]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 140, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const DAY_DROP_PREFIX = "day:";
+  const dayDropId = (dayIdx: number) => `${DAY_DROP_PREFIX}${dayIdx}`;
+
+  function findPlaceInPlan(placeId: string): { dayIdx: number; idx: number } | null {
+    for (let d = 0; d < planDays.length; d++) {
+      const day = planDays[d] ?? [];
+      const idx = day.indexOf(placeId);
+      if (idx >= 0) return { dayIdx: d, idx };
+    }
+    return null;
+  }
+
+  function interpretOver(overId: string | null): null | { dayIdx: number; idx: number | null } {
+    if (!overId) return null;
+    if (overId.startsWith(DAY_DROP_PREFIX)) {
+      const raw = overId.slice(DAY_DROP_PREFIX.length);
+      const dayIdx = Number(raw);
+      if (!Number.isFinite(dayIdx)) return null;
+      return { dayIdx, idx: null };
+    }
+    const loc = findPlaceInPlan(overId);
+    return loc ? { dayIdx: loc.dayIdx, idx: loc.idx } : null;
+  }
+
+  function onDndDragStart(event: DragStartEvent) {
+    const placeId = String(event.active.id);
+    const loc = findPlaceInPlan(placeId);
+    if (!loc) return;
+    setDragging({ placeId, fromDay: loc.dayIdx, fromIdx: loc.idx });
+    setDragOver({ day: loc.dayIdx, idx: loc.idx });
+  }
+
+  function onDndDragOver(event: DragOverEvent) {
+    if (!dragging) return;
+    const overId = event.over?.id != null ? String(event.over.id) : null;
+    const o = interpretOver(overId);
+    if (!o) return setDragOver(null);
+    setDragOver({ day: o.dayIdx, idx: o.idx });
+  }
+
+  function onDndDragCancel() {
+    setDragging(null);
+    setDragOver(null);
+  }
+
+  function onDndDragEnd(event: DragEndEvent) {
+    const activeId = event.active?.id != null ? String(event.active.id) : null;
+    const overId = event.over?.id != null ? String(event.over.id) : null;
+    const cur = dragging;
+    setDragging(null);
+    setDragOver(null);
+    if (!cur || !activeId || activeId !== cur.placeId) return;
+    const o = interpretOver(overId);
+    if (!o) return;
+
+    const toDay = o.dayIdx;
+    const toIdx = o.idx == null ? (planDays[toDay] ?? []).length : o.idx;
+
+    // no-op
+    if (cur.fromDay === toDay && cur.fromIdx === toIdx) return;
+
+    moveInPlan({
+      placeId: cur.placeId,
+      fromDay: cur.fromDay,
+      fromIdx: cur.fromIdx,
+      toDay,
+      toIdx,
+    });
+  }
+
+  function PlanDay(props: { className?: string; children: ReactNode }) {
+    const { children, className } = props;
+    return <div className={["py-2 rounded-xl transition-colors", className ?? ""].join(" ")}>{children}</div>;
+  }
+
+  function DayDropZone(props: { dayIdx: number; className?: string; children?: ReactNode }) {
+    const { dayIdx, className, children } = props;
+    const { setNodeRef, isOver } = useDroppable({ id: dayDropId(dayIdx) });
+    return (
+      <div
+        ref={setNodeRef}
+        className={[
+          className ?? "",
+          isOver ? "ring-2 ring-neutral-900/10 bg-neutral-50" : "",
+        ].join(" ")}
+      >
+        {children}
+      </div>
+    );
+  }
+
+  function SortableStop(props: { placeId: string; className?: string; children: (bind: {
+    attributes: Record<string, unknown>;
+    listeners: Record<string, unknown>;
+    setActivatorNodeRef: (node: HTMLElement | null) => void;
+    isDragging: boolean;
+  }) => ReactNode }) {
+    const { placeId, className, children } = props;
+    const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+      id: placeId,
+    });
+    const style: CSSProperties = {
+      transform: CSS.Transform.toString(transform),
+      transition,
+      opacity: isDragging ? 0.6 : undefined,
+    };
+    return (
+      <li ref={setNodeRef} style={style} className={className}>
+        {children({ attributes: attributes as unknown as Record<string, unknown>, listeners: listeners as unknown as Record<string, unknown>, setActivatorNodeRef, isDragging })}
+      </li>
+    );
+  }
 
   const t = useMemo(() => createT(language), [language]);
 
@@ -1913,473 +2049,417 @@ export default function Home() {
             {places.length > 0 && places.some((p) => p.kind !== "hotel") ? (
               <div className="mt-3">
                 <div className="mt-2 space-y-3">
-                  {planDays.map((day, dayIdx) => (
-                    <div
-                      key={`day_${dayIdx}`}
-                      className={[
-                        "py-2 rounded-xl transition-colors",
-                        dragging && dragOver?.day === dayIdx && dragOver?.idx === null
-                          ? "bg-neutral-50 ring-2 ring-neutral-900/10"
-                          : "",
-                      ].join(" ")}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                      }}
-                      onDragEnter={() => {
-                        if (!dragging) return;
-                        setDragOver({ day: dayIdx, idx: null });
-                      }}
-                      onDragLeave={(e) => {
-                        // Avoid clearing if the pointer is still inside the container (due to bubbling).
-                        const rt = e.relatedTarget as Node | null;
-                        if (rt && (e.currentTarget as HTMLElement).contains(rt)) return;
-                        setDragOver((prev) => (prev?.day === dayIdx && prev?.idx === null ? null : prev));
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (!dragging) return;
-                        moveInPlan({
-                          placeId: dragging.placeId,
-                          fromDay: dragging.fromDay,
-                          fromIdx: dragging.fromIdx,
-                          toDay: dayIdx,
-                          toIdx: day.length, // append if dropped on the container
-                        });
-                        setDragging(null);
-                        setDragOver(null);
-                      }}
-                    >
-                      <div className="flex flex-wrap items-center gap-3 py-1">
-                        <div className="h-px flex-1 bg-neutral-200" />
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="text-xs font-medium text-neutral-500">
-                            {t("common.day")} {dayIdx + 1}
-                          </div>
-                        <div className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-1.5 py-1">
-                          <input
-                            type="time"
-                            className="h-6 w-[78px] rounded-md border border-neutral-200 bg-neutral-50 px-1 text-[11px] text-neutral-800"
-                            value={(planDayWindows[dayIdx]?.start ?? dayStart) as string}
-                            onChange={(e) => setDayWindow(dayIdx, { start: e.target.value })}
-                            aria-label={t("planner.ariaDayStartTime", { day: dayIdx + 1 })}
-                            title={t("planner.dayStartTitle")}
-                          />
-                          <span className="text-[11px] text-neutral-400">—</span>
-                          <input
-                            type="time"
-                            className="h-6 w-[78px] rounded-md border border-neutral-200 bg-neutral-50 px-1 text-[11px] text-neutral-800"
-                            value={(planDayWindows[dayIdx]?.end ?? dayEnd) as string}
-                            onChange={(e) => setDayWindow(dayIdx, { end: e.target.value })}
-                            aria-label={t("planner.ariaDayEndTime", { day: dayIdx + 1 })}
-                            title={t("planner.dayEndTitle")}
-                          />
-                        </div>
-                          <details className="relative">
-                            <summary
-                              className={[
-                                "list-none h-7 w-8 grid place-items-center rounded-lg border bg-white text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50 cursor-pointer select-none",
-                                optimizingDayIdx != null ? "opacity-60 pointer-events-none" : "border-neutral-200",
-                              ].join(" ")}
-                              aria-label={t("planner.dayMenuLabel")}
-                              title={t("planner.dayMenuLabel")}
-                            >
-                              ⋯
-                            </summary>
-                            <div className="absolute right-0 mt-2 w-56 rounded-xl border border-neutral-200 bg-white shadow-lg p-1 z-20">
-                              <button
-                                type="button"
-                                className="w-full text-left rounded-lg px-2 py-2 text-xs text-neutral-800 hover:bg-neutral-50"
-                                onClick={(e) => {
-                                  (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
-                                  optimizeDayRoute(dayIdx);
-                                }}
-                                title={t("planner.optimizeDayHint")}
-                                aria-label={t("planner.optimizeDayHint")}
-                                disabled={optimizingDayIdx != null}
-                              >
-                                {optimizingDayIdx === dayIdx ? t("planner.optimizingDayButton") : t("planner.dayMenuOptimize")}
-                              </button>
-                              <button
-                                type="button"
-                                className="w-full text-left rounded-lg px-2 py-2 text-xs text-red-700 hover:bg-red-50"
-                                onClick={(e) => {
-                                  (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
-                                  deleteDay(dayIdx);
-                                }}
-                                aria-label={t("planner.ariaDeleteDay", { day: dayIdx + 1 })}
-                                title={t("planner.dayMenuDelete")}
-                              >
-                                {t("planner.dayMenuDelete")}
-                              </button>
-                            </div>
-                          </details>
-                        </div>
-                        <div className="h-px flex-1 bg-neutral-200" />
-                      </div>
-
-                      {day.length === 0 ? (
-                        <div className="mt-3 rounded-lg border border-dashed border-neutral-200 p-3 text-xs text-neutral-500 bg-white">
-                          {t("planner.dragActivitiesHere")}
-                        </div>
-                      ) : (
-                        <ul className="mt-3 space-y-2">
-                          {day.map((id, idx) => {
-                            const p = placeById[id];
-                            if (!p) return null;
-                            const key = `plan_${dayIdx}_${idx}_${p.id}`;
-                            const isExpanded = Boolean(expanded[p.id]);
-                            const isHotel = p.kind === "hotel";
-                            const isAirport = p.kind === "airport";
-                            const mode = (planLegModes[dayIdx]?.[idx] ?? "driving") as TravelMode;
-                            const eta = etaByDayIdx[dayIdx]?.items?.[idx];
-
-                            return (
-                              <div key={key}>
-                                {idx > 0 ? (
-                                  <div className="flex items-center px-2 py-1 text-xs text-neutral-600">
-                                    <span className="min-w-0 truncate">
-                                      {modeLabel(mode).replace(" (simulado)", "")}
-                                    </span>
-                                    <span className="ml-auto font-medium tabular-nums">
-                                      {eta?.travelMin != null ? `${Math.round(Math.max(0, eta.travelMin))} min` : "—"}
-                                    </span>
-                                  </div>
-                                ) : null}
-
-                                <li
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+                    onDragStart={onDndDragStart}
+                    onDragOver={onDndDragOver}
+                    onDragCancel={onDndDragCancel}
+                    onDragEnd={onDndDragEnd}
+                  >
+                    <div className="space-y-3">
+                      {planDays.map((day, dayIdx) => (
+                        <PlanDay
+                          key={`day_${dayIdx}`}
+                          className={[
+                            dragging && dragOver?.day === dayIdx && dragOver?.idx === null
+                              ? "bg-neutral-50 ring-2 ring-neutral-900/10"
+                              : "",
+                          ].join(" ")}
+                        >
+                          <div className="flex flex-wrap items-center gap-3 py-1">
+                            <div className="h-px flex-1 bg-neutral-200" />
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-xs font-medium text-neutral-500">
+                                {t("common.day")} {dayIdx + 1}
+                              </div>
+                              <div className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-white px-1.5 py-1">
+                                <input
+                                  type="time"
+                                  className="h-6 w-[78px] rounded-md border border-neutral-200 bg-neutral-50 px-1 text-[11px] text-neutral-800"
+                                  value={(planDayWindows[dayIdx]?.start ?? dayStart) as string}
+                                  onChange={(e) => setDayWindow(dayIdx, { start: e.target.value })}
+                                  aria-label={t("planner.ariaDayStartTime", { day: dayIdx + 1 })}
+                                  title={t("planner.dayStartTitle")}
+                                />
+                                <span className="text-[11px] text-neutral-400">—</span>
+                                <input
+                                  type="time"
+                                  className="h-6 w-[78px] rounded-md border border-neutral-200 bg-neutral-50 px-1 text-[11px] text-neutral-800"
+                                  value={(planDayWindows[dayIdx]?.end ?? dayEnd) as string}
+                                  onChange={(e) => setDayWindow(dayIdx, { end: e.target.value })}
+                                  aria-label={t("planner.ariaDayEndTime", { day: dayIdx + 1 })}
+                                  title={t("planner.dayEndTitle")}
+                                />
+                              </div>
+                              <details className="relative">
+                                <summary
                                   className={[
-                                    "rounded-lg border border-neutral-200 bg-white p-2 transition transform-gpu",
-                                    dragging?.placeId === p.id
-                                      ? "opacity-80 shadow-lg ring-2 ring-neutral-900/10 scale-[1.01] cursor-grabbing"
-                                      : "hover:bg-neutral-50",
-                                    dragging && dragOver?.day === dayIdx && dragOver?.idx === idx
-                                      ? "ring-2 ring-blue-400/60 bg-blue-50"
-                                      : "",
+                                    "list-none h-7 w-8 grid place-items-center rounded-lg border bg-white text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50 cursor-pointer select-none",
+                                    optimizingDayIdx != null ? "opacity-60 pointer-events-none" : "border-neutral-200",
                                   ].join(" ")}
-                                  onDragOver={(e) => {
-                                    e.preventDefault();
-                                  }}
-                                  onDragEnter={() => {
-                                    if (!dragging) return;
-                                    setDragOver({ day: dayIdx, idx });
-                                  }}
-                                  onDragLeave={(e) => {
-                                    const rt = e.relatedTarget as Node | null;
-                                    if (rt && (e.currentTarget as HTMLElement).contains(rt)) return;
-                                    setDragOver((prev) => (prev?.day === dayIdx && prev?.idx === idx ? null : prev));
-                                  }}
-                                  onDrop={(e) => {
-                                    e.preventDefault();
-                                    if (!dragging) return;
-                                    moveInPlan({
-                                      placeId: dragging.placeId,
-                                      fromDay: dragging.fromDay,
-                                      fromIdx: dragging.fromIdx,
-                                      toDay: dayIdx,
-                                      toIdx: idx, // insert before the item
-                                    });
-                                    setDragging(null);
-                                    setDragOver(null);
-                                  }}
+                                  aria-label={t("planner.dayMenuLabel")}
+                                  title={t("planner.dayMenuLabel")}
                                 >
-                                <div className="flex items-start justify-between gap-2">
+                                  ⋯
+                                </summary>
+                                <div className="absolute right-0 mt-2 w-56 rounded-xl border border-neutral-200 bg-white shadow-lg p-1 z-20">
                                   <button
                                     type="button"
-                                    className="min-w-0 text-left"
-                                    onClick={() => {
-                                      setMapCenter({ lat: p.lat, lon: p.lon });
-                                      setSelectedPlaceId(p.id);
+                                    className="w-full text-left rounded-lg px-2 py-2 text-xs text-neutral-800 hover:bg-neutral-50"
+                                    onClick={(e) => {
+                                      (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute(
+                                        "open",
+                                      );
+                                      optimizeDayRoute(dayIdx);
                                     }}
+                                    title={t("planner.optimizeDayHint")}
+                                    aria-label={t("planner.optimizeDayHint")}
+                                    disabled={optimizingDayIdx != null}
                                   >
-                                    <div className="flex items-center gap-2">
-                                      <span
-                                        className={[
-                                          "text-xs select-none",
-                                          dragging?.placeId === p.id
-                                            ? "text-neutral-700 cursor-grabbing"
-                                            : "text-neutral-400 cursor-grab active:cursor-grabbing hover:text-neutral-600",
-                                        ].join(" ")}
-                                        aria-label={t("planner.dragToReorder")}
-                                        title={t("planner.dragToReorder")}
-                                        draggable
-                                        onDragStart={(e) => {
-                                          e.dataTransfer.effectAllowed = "move";
-                                          // Firefox requires setData to initiate drag.
-                                          try {
-                                            e.dataTransfer.setData("text/plain", p.id);
-                                          } catch {
-                                            // ignore
-                                          }
-                                          // More visible drag preview (avoids the "nothing seems to move" feeling).
-                                          try {
-                                            const li = (e.currentTarget as HTMLElement).closest("li") as HTMLElement | null;
-                                            if (li) {
-                                              const r = li.getBoundingClientRect();
-                                              const clone = li.cloneNode(true) as HTMLElement;
-                                              clone.style.position = "absolute";
-                                              clone.style.top = "-10000px";
-                                              clone.style.left = "-10000px";
-                                              clone.style.width = `${Math.max(220, Math.round(r.width))}px`;
-                                              clone.style.background = "white";
-                                              clone.style.borderRadius = "12px";
-                                              clone.style.boxShadow = "0 18px 40px rgba(0,0,0,0.18)";
-                                              clone.style.opacity = "0.98";
-                                              clone.style.transform = "scale(1.02)";
-                                              clone.style.pointerEvents = "none";
-                                              document.body.appendChild(clone);
-                                              e.dataTransfer.setDragImage(clone, 24, 20);
-                                              window.setTimeout(() => clone.remove(), 0);
-                                            }
-                                          } catch {
-                                            // ignore
-                                          }
-                                          setDragging({ placeId: p.id, fromDay: dayIdx, fromIdx: idx });
-                                        }}
-                                        onDragEnd={() => {
-                                          setDragging(null);
-                                          setDragOver(null);
-                                        }}
-                                      >
-                                        ⠿
-                                      </span>
-                                      {isHotel ? (
-                                        <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
-                                          H:{hotelIndexById[p.id] ?? ""}
-                                        </span>
-                                      ) : isAirport ? (
-                                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
-                                          ✈:{airportIndexById[p.id] ?? ""}
-                                        </span>
-                                      ) : (
-                                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
-                                          A:{activityIndexById[p.id] ?? ""}
-                                        </span>
-                                      )}
-                                      <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700">
-                                        {formatDurationCompact(p)}
-                                      </span>
-                                    </div>
-                                    <div className="mt-1 text-sm font-medium line-clamp-2">
-                                      {p.name}
-                                    </div>
-                                    {idx > 0 ? (
-                                      <div className="mt-1 flex items-center gap-2 text-xs text-neutral-600">
-                                        <span className="shrink-0">{t("planner.goBy")}</span>
-                                        {(() => {
-                                          const prevId = day[idx - 1];
-                                          const prev = prevId ? placeById[prevId] : undefined;
-                                          const canFly = Boolean(prev && prev.kind === "airport" && p.kind === "airport");
-                                          return (
-                                        <select
-                                          className="h-7 rounded-xl bg-neutral-100 px-2 text-xs text-neutral-800 border border-neutral-200"
-                                          value={(planLegModes[dayIdx]?.[idx] ?? "driving") as TravelMode}
-                                          onChange={(e) => setLegMode(dayIdx, idx, e.target.value as TravelMode)}
-                                          aria-label={t("planner.travelModeToThis")}
-                                          title={t("planner.travelModeToThis")}
-                                        >
-                                          <option value="driving">{t("travelMode.driving")}</option>
-                                          <option value="walking">{t("travelMode.walking")}</option>
-                                          <option value="cycling">{t("travelMode.cycling")}</option>
-                                          <option value="transit">{t("travelMode.transit")}</option>
-                                          {canFly ? <option value="flight">{t("travelMode.flight")}</option> : null}
-                                        </select>
-                                          );
-                                        })()}
-                                        <span
-                                          className={[
-                                            "ml-auto min-w-[150px] text-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs tabular-nums",
-                                            eta?.overflow
-                                              ? "bg-red-100 text-red-800"
-                                              : "bg-emerald-100 text-emerald-800",
-                                          ].join(" ")}
-                                          title={t("planner.etaTitle")}
-                                        >
-                                          {eta ? `${formatClockAbs(eta.arriveAbs)}–${formatClockAbs(eta.departAbs)}` : "—"}
-                                        </span>
-                                      </div>
-                                    ) : null}
+                                    {optimizingDayIdx === dayIdx ? t("planner.optimizingDayButton") : t("planner.dayMenuOptimize")}
                                   </button>
-
-                                  <div className="shrink-0 flex items-center gap-2">
-                                    {idx > 0 ? (
-                                      <button
-                                        type="button"
-                                        className="h-7 rounded-lg border border-neutral-200 bg-white px-2 text-xs text-neutral-700 hover:bg-neutral-50"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          void openLegInfo(dayIdx, idx);
-                                        }}
-                                        title={t("planner.viewRouteInstructions")}
-                                      >
-                                        {t("planner.routeButton")}
-                                      </button>
-                                    ) : null}
-                                    <button
-                                      type="button"
-                                      className="h-7 w-7 grid place-items-center rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
-                                      onClick={() => deletePlace(p.id)}
-                                      aria-label={`${t("common.remove")} ${isHotel ? t("place.hotel") : isAirport ? t("place.airport") : t("place.attraction")}`}
-                                      title={t("common.remove")}
-                                    >
-                                      🗑
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="text-xs text-neutral-500 hover:text-neutral-900"
-                                      onClick={() => setExpanded((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
-                                    >
-                                      {isExpanded ? t("editor.hide") : t("editor.edit")}
-                                    </button>
-                                  </div>
+                                  <button
+                                    type="button"
+                                    className="w-full text-left rounded-lg px-2 py-2 text-xs text-red-700 hover:bg-red-50"
+                                    onClick={(e) => {
+                                      (e.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute(
+                                        "open",
+                                      );
+                                      deleteDay(dayIdx);
+                                    }}
+                                    aria-label={t("planner.ariaDeleteDay", { day: dayIdx + 1 })}
+                                    title={t("planner.dayMenuDelete")}
+                                  >
+                                    {t("planner.dayMenuDelete")}
+                                  </button>
                                 </div>
+                              </details>
+                            </div>
+                            <div className="h-px flex-1 bg-neutral-200" />
+                          </div>
 
-                                {isExpanded ? (
-                                  <div className="mt-3">
-                                    <label className="text-xs text-neutral-600">
-                                      {t("editor.name")}
-                                      <input
-                                        className="mt-1 h-9 w-full rounded-lg border border-neutral-300 px-2 text-sm"
-                                        value={p.name}
-                                        onChange={(e) => setPlaceName(p.id, e.target.value)}
-                                      />
-                                    </label>
+                          {day.length === 0 ? (
+                            <DayDropZone
+                              dayIdx={dayIdx}
+                              className="mt-3 rounded-lg border border-dashed border-neutral-200 p-3 text-xs text-neutral-500 bg-white"
+                            >
+                              {t("planner.dragActivitiesHere")}
+                            </DayDropZone>
+                          ) : (
+                            <SortableContext items={day} strategy={verticalListSortingStrategy}>
+                              <ul className="mt-3 space-y-2">
+                                {day.map((id, idx) => {
+                                  const p = placeById[id];
+                                  if (!p) return null;
+                                  const isExpanded = Boolean(expanded[p.id]);
+                                  const isHotel = p.kind === "hotel";
+                                  const isAirport = p.kind === "airport";
+                                  const mode = (planLegModes[dayIdx]?.[idx] ?? "driving") as TravelMode;
+                                  const eta = etaByDayIdx[dayIdx]?.items?.[idx];
 
-                                    <label className="mt-3 block text-xs text-neutral-600">
-                                      {t("editor.description")}
-                                      <textarea
-                                        className="mt-1 min-h-[84px] w-full resize-y rounded-lg border border-neutral-300 px-2 py-2 text-sm"
-                                        placeholder={t("planner.quickNotesPlaceholder")}
-                                        value={p.description ?? ""}
-                                        onChange={(e) => setPlaceDescription(p.id, e.target.value)}
-                                      />
-                                    </label>
+                                  return (
+                                    <SortableStop key={p.id} placeId={p.id} className="space-y-1">
+                                      {({ attributes, listeners, setActivatorNodeRef, isDragging }) => (
+                                        <>
+                                          {idx > 0 ? (
+                                            <div className="flex items-center px-2 py-1 text-xs text-neutral-600">
+                                              <span className="min-w-0 truncate">{modeLabel(mode).replace(" (simulado)", "")}</span>
+                                              <span className="ml-auto font-medium tabular-nums">
+                                                {eta?.travelMin != null ? `${Math.round(Math.max(0, eta.travelMin))} min` : "—"}
+                                              </span>
+                                            </div>
+                                          ) : null}
 
-                                    <div className="mt-3">
-                                      <div className="text-xs text-neutral-600">{t("editor.image")}</div>
-                                      {p.imageDataUrl ? (
-                                        <div className="mt-2">
-                                          <img
-                                            src={p.imageDataUrl}
-                                            alt=""
-                                            className="h-28 w-full rounded-xl border border-neutral-200 object-cover"
-                                          />
-                                          <div className="mt-2 flex items-center justify-between">
-                                            <label className="text-xs text-neutral-600 hover:text-neutral-900 cursor-pointer">
-                                              {t("editor.change")}
-                                              <input
-                                                type="file"
-                                                accept="image/*"
-                                                className="hidden"
-                                                onChange={(e) => {
-                                                  const f = e.target.files?.[0] ?? null;
-                                                  void setPlaceImage(p.id, f);
-                                                  e.target.value = "";
-                                                }}
-                                              />
-                                            </label>
-                                            <button
-                                              type="button"
-                                              className="text-xs text-red-600 hover:text-red-700"
-                                              onClick={() => removePlaceImage(p.id)}
-                                            >
-                                              {t("editor.removeImage")}
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <label className="mt-2 inline-flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-900 cursor-pointer">
-                                          <span className="h-8 px-3 rounded-xl border border-neutral-300 bg-white grid place-items-center">
-                                            {t("editor.uploadImage")}
-                                          </span>
-                                          <input
-                                            type="file"
-                                            accept="image/*"
-                                            className="hidden"
-                                            onChange={(e) => {
-                                              const f = e.target.files?.[0] ?? null;
-                                              void setPlaceImage(p.id, f);
-                                              e.target.value = "";
-                                            }}
-                                          />
-                                        </label>
-                                      )}
-                                    </div>
-
-                                    <div className="grid grid-cols-[1fr_110px] gap-2">
-                                      {!isHotel ? (
-                                        <label className="text-xs text-neutral-600">
-                                          {t("editor.duration")}
-                                          <input
-                                            className="mt-1 h-9 w-full rounded-lg border border-neutral-300 px-2 text-sm"
-                                            type="number"
-                                            min={0}
-                                            step={p.durationUnit === "h" ? 0.25 : 5}
-                                            value={
-                                              (p.durationUnit ?? "min") === "h"
-                                                ? Number((p.durationMin / 60).toFixed(2))
-                                                : Math.round(p.durationMin)
-                                            }
-                                            onChange={(e) => {
-                                              const raw = Number(e.target.value);
-                                              const unit = p.durationUnit ?? "min";
-                                              const nextMin = unit === "h" ? raw * 60 : raw;
-                                              setPlaces((prev) =>
-                                                prev.map((x) =>
-                                                  x.id === p.id
-                                                    ? { ...x, durationMin: Math.max(0, nextMin) }
-                                                    : x,
-                                                ),
-                                              );
-                                            }}
-                                          />
-                                        </label>
-                                      ) : (
-                                        <div />
-                                      )}
-
-                                      {!isHotel ? (
-                                        <label className="text-xs text-neutral-600">
-                                          {t("editor.unit")}
-                                          <select
-                                            className="mt-1 h-9 w-full rounded-lg border border-neutral-300 bg-white px-2 text-sm"
-                                            value={p.durationUnit ?? "min"}
-                                            onChange={(e) => {
-                                              const unit = e.target.value as "min" | "h";
-                                              setPlaces((prev) =>
-                                                prev.map((x) =>
-                                                  x.id === p.id ? { ...x, durationUnit: unit } : x,
-                                                ),
-                                              );
-                                            }}
+                                          <div
+                                            className={[
+                                              "rounded-lg border border-neutral-200 bg-white p-2 transition transform-gpu",
+                                              isDragging
+                                                ? "opacity-80 shadow-lg ring-2 ring-neutral-900/10 scale-[1.01] cursor-grabbing"
+                                                : "hover:bg-neutral-50",
+                                              dragging && dragOver?.day === dayIdx && dragOver?.idx === idx
+                                                ? "ring-2 ring-blue-400/60 bg-blue-50"
+                                                : "",
+                                            ].join(" ")}
                                           >
-                                            <option value="min">min</option>
-                                            <option value="h">h</option>
-                                          </select>
-                                        </label>
-                                      ) : (
-                                        <div />
-                                      )}
-                                    </div>
+                                            <div className="flex items-start justify-between gap-2">
+                                              <div className="flex min-w-0 items-start gap-2">
+                                                <span
+                                                  ref={setActivatorNodeRef}
+                                                  {...attributes}
+                                                  {...listeners}
+                                                  className={[
+                                                    "mt-[2px] text-xs select-none px-1.5 py-1 rounded-md",
+                                                    isDragging ? "text-neutral-700 cursor-grabbing" : "text-neutral-400 cursor-grab hover:text-neutral-600",
+                                                  ].join(" ")}
+                                                  aria-label={t("planner.dragToReorder")}
+                                                  title={t("planner.dragToReorder")}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                >
+                                                  ⠿
+                                                </span>
 
-                                    <div className="mt-3 flex items-center justify-between">
-                                      <button
-                                        type="button"
-                                        className="h-9 rounded-xl border border-red-200 bg-red-50 px-3 text-sm font-medium text-red-700 hover:bg-red-100"
-                                        onClick={() => deletePlace(p.id)}
-                                      >
-                                        🗑 {t("common.remove")}
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : null}
-                              </li>
-                              </div>
-                            );
-                          })}
-                        </ul>
-                      )}
+                                                <button
+                                                  type="button"
+                                                  className="min-w-0 text-left"
+                                                  onClick={() => {
+                                                    setMapCenter({ lat: p.lat, lon: p.lon });
+                                                    setSelectedPlaceId(p.id);
+                                                  }}
+                                                >
+                                                  <div className="flex items-center gap-2">
+                                                    {isHotel ? (
+                                                      <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
+                                                        H:{hotelIndexById[p.id] ?? ""}
+                                                      </span>
+                                                    ) : isAirport ? (
+                                                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                                                        ✈:{airportIndexById[p.id] ?? ""}
+                                                      </span>
+                                                    ) : (
+                                                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                                                        A:{activityIndexById[p.id] ?? ""}
+                                                      </span>
+                                                    )}
+                                                    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700">
+                                                      {formatDurationCompact(p)}
+                                                    </span>
+                                                  </div>
+                                                  <div className="mt-1 text-sm font-medium line-clamp-2">{p.name}</div>
+                                                  {idx > 0 ? (
+                                                    <div className="mt-1 flex items-center gap-2 text-xs text-neutral-600">
+                                                      <span className="shrink-0">{t("planner.goBy")}</span>
+                                                      {(() => {
+                                                        const prevId = day[idx - 1];
+                                                        const prev = prevId ? placeById[prevId] : undefined;
+                                                        const canFly = Boolean(prev && prev.kind === "airport" && p.kind === "airport");
+                                                        return (
+                                                          <select
+                                                            className="h-7 rounded-xl bg-neutral-100 px-2 text-xs text-neutral-800 border border-neutral-200"
+                                                            value={(planLegModes[dayIdx]?.[idx] ?? "driving") as TravelMode}
+                                                            onChange={(e) => setLegMode(dayIdx, idx, e.target.value as TravelMode)}
+                                                            aria-label={t("planner.travelModeToThis")}
+                                                            title={t("planner.travelModeToThis")}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                          >
+                                                            <option value="driving">{t("travelMode.driving")}</option>
+                                                            <option value="walking">{t("travelMode.walking")}</option>
+                                                            <option value="cycling">{t("travelMode.cycling")}</option>
+                                                            <option value="transit">{t("travelMode.transit")}</option>
+                                                            {canFly ? <option value="flight">{t("travelMode.flight")}</option> : null}
+                                                          </select>
+                                                        );
+                                                      })()}
+                                                      <span
+                                                        className={[
+                                                          "ml-auto min-w-[150px] text-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs tabular-nums",
+                                                          eta?.overflow ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800",
+                                                        ].join(" ")}
+                                                        title={t("planner.etaTitle")}
+                                                      >
+                                                        {eta ? `${formatClockAbs(eta.arriveAbs)}–${formatClockAbs(eta.departAbs)}` : "—"}
+                                                      </span>
+                                                    </div>
+                                                  ) : null}
+                                                </button>
+                                              </div>
+
+                                              <div className="shrink-0 flex items-center gap-2">
+                                                {idx > 0 ? (
+                                                  <button
+                                                    type="button"
+                                                    className="h-7 rounded-lg border border-neutral-200 bg-white px-2 text-xs text-neutral-700 hover:bg-neutral-50"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      void openLegInfo(dayIdx, idx);
+                                                    }}
+                                                    title={t("planner.viewRouteInstructions")}
+                                                  >
+                                                    {t("planner.routeButton")}
+                                                  </button>
+                                                ) : null}
+                                                <button
+                                                  type="button"
+                                                  className="h-7 w-7 grid place-items-center rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                                                  onClick={() => deletePlace(p.id)}
+                                                  aria-label={`${t("common.remove")} ${
+                                                    isHotel ? t("place.hotel") : isAirport ? t("place.airport") : t("place.attraction")
+                                                  }`}
+                                                  title={t("common.remove")}
+                                                >
+                                                  🗑
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="text-xs text-neutral-500 hover:text-neutral-900"
+                                                  onClick={() => setExpanded((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                                                >
+                                                  {isExpanded ? t("editor.hide") : t("editor.edit")}
+                                                </button>
+                                              </div>
+                                            </div>
+
+                                            {isExpanded ? (
+                                              <div className="mt-3">
+                                                <label className="text-xs text-neutral-600">
+                                                  {t("editor.name")}
+                                                  <input
+                                                    className="mt-1 h-9 w-full rounded-lg border border-neutral-300 px-2 text-sm"
+                                                    value={p.name}
+                                                    onChange={(e) => setPlaceName(p.id, e.target.value)}
+                                                  />
+                                                </label>
+
+                                                <label className="mt-3 block text-xs text-neutral-600">
+                                                  {t("editor.description")}
+                                                  <textarea
+                                                    className="mt-1 min-h-[84px] w-full resize-y rounded-lg border border-neutral-300 px-2 py-2 text-sm"
+                                                    placeholder={t("planner.quickNotesPlaceholder")}
+                                                    value={p.description ?? ""}
+                                                    onChange={(e) => setPlaceDescription(p.id, e.target.value)}
+                                                  />
+                                                </label>
+
+                                                <div className="mt-3">
+                                                  <div className="text-xs text-neutral-600">{t("editor.image")}</div>
+                                                  {p.imageDataUrl ? (
+                                                    <div className="mt-2">
+                                                      <img
+                                                        src={p.imageDataUrl}
+                                                        alt=""
+                                                        className="h-28 w-full rounded-xl border border-neutral-200 object-cover"
+                                                      />
+                                                      <div className="mt-2 flex items-center justify-between">
+                                                        <label className="text-xs text-neutral-600 hover:text-neutral-900 cursor-pointer">
+                                                          {t("editor.change")}
+                                                          <input
+                                                            type="file"
+                                                            accept="image/*"
+                                                            className="hidden"
+                                                            onChange={(e) => {
+                                                              const f = e.target.files?.[0] ?? null;
+                                                              void setPlaceImage(p.id, f);
+                                                              e.target.value = "";
+                                                            }}
+                                                          />
+                                                        </label>
+                                                        <button
+                                                          type="button"
+                                                          className="text-xs text-red-600 hover:text-red-700"
+                                                          onClick={() => removePlaceImage(p.id)}
+                                                        >
+                                                          {t("editor.removeImage")}
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                  ) : (
+                                                    <label className="mt-2 inline-flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-900 cursor-pointer">
+                                                      <span className="h-8 px-3 rounded-xl border border-neutral-300 bg-white grid place-items-center">
+                                                        {t("editor.uploadImage")}
+                                                      </span>
+                                                      <input
+                                                        type="file"
+                                                        accept="image/*"
+                                                        className="hidden"
+                                                        onChange={(e) => {
+                                                          const f = e.target.files?.[0] ?? null;
+                                                          void setPlaceImage(p.id, f);
+                                                          e.target.value = "";
+                                                        }}
+                                                      />
+                                                    </label>
+                                                  )}
+                                                </div>
+
+                                                <div className="grid grid-cols-[1fr_110px] gap-2">
+                                                  {!isHotel ? (
+                                                    <label className="text-xs text-neutral-600">
+                                                      {t("editor.duration")}
+                                                      <input
+                                                        className="mt-1 h-9 w-full rounded-lg border border-neutral-300 px-2 text-sm"
+                                                        type="number"
+                                                        min={0}
+                                                        step={p.durationUnit === "h" ? 0.25 : 5}
+                                                        value={
+                                                          (p.durationUnit ?? "min") === "h"
+                                                            ? Number((p.durationMin / 60).toFixed(2))
+                                                            : Math.round(p.durationMin)
+                                                        }
+                                                        onChange={(e) => {
+                                                          const raw = Number(e.target.value);
+                                                          const unit = p.durationUnit ?? "min";
+                                                          const nextMin = unit === "h" ? raw * 60 : raw;
+                                                          setPlaces((prev) =>
+                                                            prev.map((x) =>
+                                                              x.id === p.id ? { ...x, durationMin: Math.max(0, nextMin) } : x,
+                                                            ),
+                                                          );
+                                                        }}
+                                                      />
+                                                    </label>
+                                                  ) : (
+                                                    <div />
+                                                  )}
+
+                                                  {!isHotel ? (
+                                                    <label className="text-xs text-neutral-600">
+                                                      {t("editor.unit")}
+                                                      <select
+                                                        className="mt-1 h-9 w-full rounded-lg border border-neutral-300 bg-white px-2 text-sm"
+                                                        value={p.durationUnit ?? "min"}
+                                                        onChange={(e) => {
+                                                          const unit = e.target.value as "min" | "h";
+                                                          setPlaces((prev) => prev.map((x) => (x.id === p.id ? { ...x, durationUnit: unit } : x)));
+                                                        }}
+                                                      >
+                                                        <option value="min">min</option>
+                                                        <option value="h">h</option>
+                                                      </select>
+                                                    </label>
+                                                  ) : (
+                                                    <div />
+                                                  )}
+                                                </div>
+
+                                                <div className="mt-3 flex items-center justify-between">
+                                                  <button
+                                                    type="button"
+                                                    className="h-9 rounded-xl border border-red-200 bg-red-50 px-3 text-sm font-medium text-red-700 hover:bg-red-100"
+                                                    onClick={() => deletePlace(p.id)}
+                                                  >
+                                                    🗑 {t("common.remove")}
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        </>
+                                      )}
+                                    </SortableStop>
+                                  );
+                                })}
+                              </ul>
+                              <DayDropZone
+                                dayIdx={dayIdx}
+                                className="mt-2 h-4 rounded-lg border border-dashed border-neutral-200 bg-white/60"
+                              />
+                            </SortableContext>
+                          )}
+                        </PlanDay>
+                      ))}
                     </div>
-                  ))}
+
+                    <DragOverlay>
+                      {dragging ? (
+                        <div className="w-[min(360px,calc(100vw-48px))] rounded-lg border border-neutral-200 bg-white p-2 shadow-xl">
+                          <div className="text-sm font-medium text-neutral-900">
+                            {placeById[dragging.placeId]?.name ?? t("planner.unnamedItem")}
+                          </div>
+                        </div>
+                      ) : null}
+                    </DragOverlay>
+                  </DndContext>
 
                   <button
                     type="button"
