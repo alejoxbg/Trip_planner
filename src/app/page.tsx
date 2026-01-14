@@ -262,6 +262,112 @@ export default function Home() {
     );
   }
 
+  function AddPanel(props: { wrapperClassName: string }) {
+    const { wrapperClassName } = props;
+    if (!addUI) return null;
+    return (
+      <div className={wrapperClassName}>
+        <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2 shrink-0">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-neutral-500">{t("common.add")}</div>
+            <div className="text-sm font-semibold text-neutral-900">{kindLabel(addUI.kind)}</div>
+          </div>
+          <button
+            type="button"
+            className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+            onClick={closeAdd}
+            aria-label={t("common.close")}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-3 overflow-auto">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={[
+                "h-9 flex-1 rounded-xl border px-3 text-sm font-medium",
+                addUI.mode === "search"
+                  ? "border-neutral-900 bg-neutral-900 text-white"
+                  : "border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
+              ].join(" ")}
+              onClick={() => {
+                setAddUI((prev) => (prev ? { ...prev, mode: "search" } : prev));
+                setPickOnMap(false);
+              }}
+            >
+              {t("common.search")}
+            </button>
+            <button
+              type="button"
+              className={[
+                "h-9 flex-1 rounded-xl border px-3 text-sm font-medium",
+                addUI.mode === "map"
+                  ? "border-neutral-900 bg-neutral-900 text-white"
+                  : "border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
+              ].join(" ")}
+              onClick={() => {
+                setAddUI((prev) => (prev ? { ...prev, mode: "map" } : prev));
+                setPickOnMap(true);
+              }}
+            >
+              {t("planner.clickOnMap")}
+            </button>
+          </div>
+
+          {addUI.mode === "search" ? (
+            <div className="mt-3">
+              <PlaceSearch
+                labels={{
+                  label: t("placeSearch.label"),
+                  placeholder: t("placeSearch.placeholder"),
+                  searching: t("placeSearch.searching"),
+                  hint: t("placeSearch.hint"),
+                }}
+                onPick={(picked) => {
+                  const kind = addUI.kind;
+                  const dayNum = Math.max(1, planDays.length);
+                  const newPlace: Place = {
+                    id: createId(kind),
+                    name: picked.name,
+                    lat: picked.lat,
+                    lon: picked.lon,
+                    kind,
+                    durationMin:
+                      kind === "hotel"
+                        ? 0
+                        : kind === "airport"
+                          ? defaultAirportDurationMin
+                          : defaultPlaceDurationMin,
+                    durationUnit:
+                      kind === "hotel"
+                        ? "min"
+                        : (kind === "airport" ? defaultAirportDurationMin : defaultPlaceDurationMin) % 60 === 0
+                          ? "h"
+                          : "min",
+                    priority: 3,
+                  };
+                  setPlaces((prev) => [newPlace, ...prev]);
+                  appendToLastDay(newPlace.id);
+                  pushToast(t("toasts.addedToDay", { kind: kindLabel(kind), name: newPlace.name, day: dayNum }));
+                  // UX: when creating a new item, close everything and leave only this one open.
+                  setExpanded({ [newPlace.id]: true });
+                  setMapCenter({ lat: picked.lat, lon: picked.lon });
+                  closeAdd();
+                }}
+              />
+            </div>
+          ) : (
+            <div className="mt-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-800">
+              {t("planner.clickOnMapToAdd", { kind: kindLabel(addUI.kind) })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const t = useMemo(() => createT(language), [language]);
 
   useEffect(() => {
@@ -1764,7 +1870,7 @@ export default function Home() {
 
   return (
     <div className="h-dvh bg-neutral-50 text-neutral-900">
-      <main className="h-full min-h-0 grid grid-cols-1 md:grid-cols-[360px_1fr] gap-3 p-3">
+      <main className="h-full min-h-0 grid grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[360px_1fr] gap-3 p-3">
         <aside className="min-h-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm flex flex-col relative">
           <div className="mt-1 shrink-0">
             <div className="mb-3">
@@ -2035,6 +2141,11 @@ export default function Home() {
                   {t("place.airport")}
                 </button>
               </div>
+
+              {/* Móvil: muestra el panel de creación aquí (no encima del mapa). */}
+              {addUI ? (
+                <AddPanel wrapperClassName="mt-3 md:hidden rounded-2xl border border-neutral-200 bg-white shadow-sm overflow-hidden" />
+              ) : null}
             </div>
 
             {/* Global schedule removed: it's now configured per day. */}
@@ -2197,7 +2308,7 @@ export default function Home() {
                                                   {...attributes}
                                                   {...listeners}
                                                   className={[
-                                                    "mt-[2px] text-xs select-none px-1.5 py-1 rounded-md",
+                                                    "mt-[2px] text-xs select-none px-1.5 py-1 rounded-md hidden sm:inline-block",
                                                     isDragging ? "text-neutral-700 cursor-grabbing" : "text-neutral-400 cursor-grab hover:text-neutral-600",
                                                   ].join(" ")}
                                                   aria-label={t("planner.dragToReorder")}
@@ -2273,6 +2384,38 @@ export default function Home() {
                                               </div>
 
                                               <div className="shrink-0 flex items-center gap-2">
+                                                {/* Móvil: reordenar con flechas (más fácil que drag) */}
+                                                <div className="flex items-center gap-1 sm:hidden">
+                                                  <button
+                                                    type="button"
+                                                    className="h-7 w-7 grid place-items-center rounded-lg border border-neutral-200 bg-white text-neutral-700 disabled:opacity-40"
+                                                    disabled={idx === 0}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      if (idx === 0) return;
+                                                      moveInPlan({ placeId: p.id, fromDay: dayIdx, fromIdx: idx, toDay: dayIdx, toIdx: idx - 1 });
+                                                    }}
+                                                    aria-label="Subir"
+                                                    title="Subir"
+                                                  >
+                                                    ↑
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className="h-7 w-7 grid place-items-center rounded-lg border border-neutral-200 bg-white text-neutral-700 disabled:opacity-40"
+                                                    disabled={idx >= day.length - 1}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      if (idx >= day.length - 1) return;
+                                                      moveInPlan({ placeId: p.id, fromDay: dayIdx, fromIdx: idx, toDay: dayIdx, toIdx: idx + 2 });
+                                                    }}
+                                                    aria-label="Bajar"
+                                                    title="Bajar"
+                                                  >
+                                                    ↓
+                                                  </button>
+                                                </div>
+
                                                 {idx > 0 ? (
                                                   <button
                                                     type="button"
@@ -2592,107 +2735,7 @@ export default function Home() {
         >
           <div className="relative h-full">
             {addUI ? (
-              <div className="absolute left-3 top-3 z-1100 w-[320px] max-w-[calc(100%-24px)] rounded-2xl border border-neutral-200 bg-white/95 shadow-lg backdrop-blur">
-                <div className="flex items-center justify-between gap-3 border-b border-neutral-200 px-3 py-2">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-neutral-500">{t("common.add")}</div>
-                    <div className="text-sm font-semibold text-neutral-900">
-                      {kindLabel(addUI.kind)}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
-                    onClick={closeAdd}
-                    aria-label={t("common.close")}
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                <div className="p-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className={[
-                        "h-9 flex-1 rounded-xl border px-3 text-sm font-medium",
-                        addUI.mode === "search"
-                          ? "border-neutral-900 bg-neutral-900 text-white"
-                          : "border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
-                      ].join(" ")}
-                      onClick={() => {
-                        setAddUI((prev) => (prev ? { ...prev, mode: "search" } : prev));
-                        setPickOnMap(false);
-                      }}
-                    >
-                      {t("common.search")}
-                    </button>
-                    <button
-                      type="button"
-                      className={[
-                        "h-9 flex-1 rounded-xl border px-3 text-sm font-medium",
-                        addUI.mode === "map"
-                          ? "border-neutral-900 bg-neutral-900 text-white"
-                          : "border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
-                      ].join(" ")}
-                      onClick={() => {
-                        setAddUI((prev) => (prev ? { ...prev, mode: "map" } : prev));
-                        setPickOnMap(true);
-                      }}
-                    >
-                      {t("planner.clickOnMap")}
-                    </button>
-                  </div>
-
-                  {addUI.mode === "search" ? (
-                    <div className="mt-3">
-                      <PlaceSearch
-                        labels={{
-                          label: t("placeSearch.label"),
-                          placeholder: t("placeSearch.placeholder"),
-                          searching: t("placeSearch.searching"),
-                          hint: t("placeSearch.hint"),
-                        }}
-                        onPick={(picked) => {
-                          const kind = addUI.kind;
-                          const dayNum = Math.max(1, planDays.length);
-                          const newPlace: Place = {
-                            id: createId(kind),
-                            name: picked.name,
-                            lat: picked.lat,
-                            lon: picked.lon,
-                            kind,
-                            durationMin:
-                              kind === "hotel"
-                                ? 0
-                                : kind === "airport"
-                                  ? defaultAirportDurationMin
-                                  : defaultPlaceDurationMin,
-                            durationUnit:
-                              kind === "hotel"
-                                ? "min"
-                                : (kind === "airport" ? defaultAirportDurationMin : defaultPlaceDurationMin) % 60 === 0
-                                  ? "h"
-                                  : "min",
-                            priority: 3,
-                          };
-                          setPlaces((prev) => [newPlace, ...prev]);
-                          appendToLastDay(newPlace.id);
-                          pushToast(t("toasts.addedToDay", { kind: kindLabel(kind), name: newPlace.name, day: dayNum }));
-                          // UX: when creating a new item, close everything and leave only this one open.
-                          setExpanded({ [newPlace.id]: true });
-                          setMapCenter({ lat: picked.lat, lon: picked.lon });
-                          closeAdd();
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-800">
-                      {t("planner.clickOnMapToAdd", { kind: kindLabel(addUI.kind) })}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <AddPanel wrapperClassName="hidden md:flex absolute left-3 top-3 z-1100 w-[320px] max-w-[calc(100%-24px)] rounded-2xl border border-neutral-200 bg-white/95 shadow-lg backdrop-blur overflow-hidden flex-col" />
             ) : null}
 
             <details className="absolute right-3 top-3 z-1000">
@@ -2779,12 +2822,12 @@ export default function Home() {
               </div>
             </details>
 
-            <div className="absolute left-1/2 bottom-4 z-1000 -translate-x-1/2">
-              <div className="rounded-2xl border border-neutral-200 bg-white/95 shadow-sm backdrop-blur px-2 py-2">
-                <div className="flex items-center gap-2">
+            <div className="absolute left-1/2 bottom-2 sm:bottom-4 z-1000 -translate-x-1/2 max-w-[calc(100vw-24px)]">
+              <div className="rounded-2xl border border-neutral-200 bg-white/95 shadow-sm backdrop-blur px-2 py-1 sm:py-2">
+                <div className="flex items-center gap-1 overflow-x-auto sm:overflow-visible">
                   <button
                     type="button"
-                    className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                    className="h-8 w-8 sm:h-9 sm:w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
                     onClick={() => focusDayAndMaybeCenter(focusDay - 1, 0)}
                     aria-label={t("common.previousDay")}
                   >
@@ -2792,7 +2835,7 @@ export default function Home() {
                   </button>
 
                   <select
-                    className="h-9 rounded-xl border border-neutral-300 bg-white px-2 text-sm"
+                    className="h-8 sm:h-9 rounded-xl border border-neutral-300 bg-white px-2 text-xs sm:text-sm"
                     value={focusDay}
                     onChange={(e) => focusDayAndMaybeCenter(Number(e.target.value) || 1, 0)}
                     aria-label={t("common.selectDay")}
@@ -2806,18 +2849,16 @@ export default function Home() {
 
                   <button
                     type="button"
-                    className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                    className="h-8 w-8 sm:h-9 sm:w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
                     onClick={() => focusDayAndMaybeCenter(focusDay + 1, 0)}
                     aria-label={t("common.nextDay")}
                   >
                     ›
                   </button>
 
-                  <div className="mx-1 h-6 w-px bg-neutral-200" />
-
                   <button
                     type="button"
-                    className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                    className="h-8 w-8 sm:h-9 sm:w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
                     onClick={focusPrevActivity}
                     aria-label={t("common.previousActivity")}
                     disabled={safeDayCount === 0}
@@ -2825,32 +2866,40 @@ export default function Home() {
                     ‹
                   </button>
 
+                  {/* Móvil: botón compacto para centrar actividad actual */}
                   <button
                     type="button"
-                    className="h-9 w-[280px] sm:w-[360px] rounded-xl border border-neutral-200 bg-white px-3 text-sm text-neutral-900 hover:bg-neutral-50"
+                    className="h-8 w-8 sm:hidden grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50"
+                    onClick={() => focusDayAndMaybeCenter(focusDay, focusStopIdx)}
+                    aria-label={t("common.centerCurrentActivity")}
+                    title={t("common.centerCurrentActivity")}
+                  >
+                    ⌖
+                  </button>
+
+                  {/* Desktop: botón ancho con texto */}
+                  <button
+                    type="button"
+                    className="hidden sm:flex h-9 w-[360px] max-w-full items-center rounded-xl border border-neutral-200 bg-white px-3 text-sm text-neutral-900 hover:bg-neutral-50"
                     onClick={() => focusDayAndMaybeCenter(focusDay, focusStopIdx)}
                     aria-label={t("common.centerCurrentActivity")}
                   >
-                    <span className="flex items-center gap-2 min-w-0">
+                    <span className="flex items-center gap-2 min-w-0 w-full">
                       <span className="font-medium shrink-0">{language === "es" ? `D${focusDay}` : `Day ${focusDay}`}</span>
                       <span className="text-neutral-300 shrink-0">·</span>
                       <span className="text-neutral-700 shrink-0">
                         {focusedStops.length > 0 ? `${focusStopIdx + 1}/${focusedStops.length}` : "—"}
                       </span>
                       <span className="text-neutral-300 shrink-0">·</span>
-                      {focusedStop?.place ? (
-                        <span className="min-w-0 flex-1 truncate text-neutral-500">
-                          {focusedStop.place.name}
-                        </span>
-                      ) : (
-                        <span className="min-w-0 flex-1 truncate text-neutral-500">{t("planner.noActivities")}</span>
-                      )}
+                      <span className="min-w-0 flex-1 truncate text-neutral-500">
+                        {focusedStop?.place ? focusedStop.place.name : t("planner.noActivities")}
+                      </span>
                     </span>
                   </button>
 
                   <button
                     type="button"
-                    className="h-9 w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                    className="h-8 w-8 sm:h-9 sm:w-9 grid place-items-center rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
                     onClick={focusNextActivity}
                     aria-label={t("common.nextActivity")}
                     disabled={safeDayCount === 0}
