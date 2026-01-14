@@ -1903,7 +1903,7 @@ export default function Home() {
                   </button>
 
                   {infoOpen ? (
-                    <div className="absolute right-3 top-10 z-50 w-[332px] min-w-[260px] max-w-[calc(100vw-48px)] rounded-2xl border border-neutral-200 bg-white shadow-lg overflow-hidden">
+                    <div className="fixed left-3 right-3 top-16 z-3000 w-auto max-w-[calc(100vw-24px)] rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden md:absolute md:left-auto md:right-3 md:top-10 md:z-50 md:w-[332px] md:min-w-[260px] md:max-w-[calc(100vw-48px)] md:shadow-lg">
                       <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2">
                         <div>
                           <div className="text-xs font-medium text-neutral-500">{t("common.info")}</div>
@@ -1919,7 +1919,7 @@ export default function Home() {
                         </button>
                       </div>
 
-                      <div className="max-h-[calc(100vh-140px)] overflow-y-auto p-3 space-y-3">
+                      <div className="max-h-[calc(100dvh-140px)] overflow-y-auto p-3 space-y-3 md:max-h-[calc(100vh-140px)]">
                         <div className="flex items-center gap-3">
                           <a
                             href="https://www.linkedin.com/in/alejandro-naranjo-z/"
@@ -1993,7 +1993,7 @@ export default function Home() {
                   ) : null}
 
                   {settingsOpen ? (
-                    <div className="absolute right-3 top-10 z-50 w-[300px] min-w-[260px] max-w-[calc(100vw-48px)] rounded-2xl border border-neutral-200 bg-white shadow-lg overflow-hidden">
+                    <div className="fixed left-3 right-3 top-16 z-3000 w-auto max-w-[calc(100vw-24px)] rounded-2xl border border-neutral-200 bg-white shadow-xl overflow-hidden md:absolute md:left-auto md:right-3 md:top-10 md:z-50 md:w-[300px] md:min-w-[260px] md:max-w-[calc(100vw-48px)] md:shadow-lg">
                       <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2">
                         <div>
                           <div className="text-xs font-medium text-neutral-500">{t("common.settings")}</div>
@@ -2009,7 +2009,7 @@ export default function Home() {
                         </button>
                       </div>
 
-                      <div className="max-h-[calc(100vh-140px)] overflow-y-auto p-3 space-y-3">
+                      <div className="max-h-[calc(100dvh-140px)] overflow-y-auto p-3 space-y-3 md:max-h-[calc(100vh-140px)]">
                         <label className="block text-xs text-neutral-600">
                           {t("settings.language")}
                           <select
