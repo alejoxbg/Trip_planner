@@ -28,6 +28,8 @@ export type LeafletMapProps = {
   onMapClick?: (picked: { lat: number; lon: number }) => void;
   selectedMarkerId?: string;
   onMarkerClick?: (id: string) => void;
+  draggableMarkerId?: string;
+  onMarkerMove?: (id: string, picked: { lat: number; lon: number }) => void;
   labels?: {
     unnamed: string;
     kindHotel: string;
@@ -101,6 +103,8 @@ export function LeafletMap({
   onMapClick,
   selectedMarkerId,
   onMarkerClick,
+  draggableMarkerId,
+  onMarkerMove,
   labels,
 }: LeafletMapProps) {
   const initialCenter = useMemo<LatLngExpression>(() => {
@@ -143,12 +147,20 @@ export function LeafletMap({
             position={[m.lat, m.lon]}
             icon={markerIcon(m.kind, m.label)}
             opacity={m.opacity ?? 1}
+            draggable={Boolean(draggableMarkerId && draggableMarkerId === m.id)}
+            autoPan={Boolean(draggableMarkerId && draggableMarkerId === m.id)}
             ref={(ref) => {
               markerRefs.current[m.id] = (ref as unknown as LeafletMarker) ?? null;
             }}
             eventHandlers={{
               click: () => {
                 onMarkerClick?.(m.id);
+              },
+              dragend: (e) => {
+                if (!onMarkerMove) return;
+                // `e.target` is the Leaflet Marker instance.
+                const ll = (e.target as LeafletMarker).getLatLng();
+                onMarkerMove(m.id, { lat: ll.lat, lon: ll.lng });
               },
             }}
           >

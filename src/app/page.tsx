@@ -74,6 +74,7 @@ export default function Home() {
   const [focusStopIdx, setFocusStopIdx] = useState(0); // index within the day (includes hotel when applicable)
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [editingPlaceId, setEditingPlaceId] = useState<string | null>(null);
   const [legInfo, setLegInfo] = useState<
     | null
     | {
@@ -127,6 +128,12 @@ export default function Home() {
   useEffect(() => {
     savePlaces(places);
   }, [places]);
+
+  useEffect(() => {
+    // Avoid leaving a marker draggable if selection changes.
+    if (!selectedPlaceId) setEditingPlaceId(null);
+    if (editingPlaceId && selectedPlaceId && editingPlaceId !== selectedPlaceId) setEditingPlaceId(null);
+  }, [selectedPlaceId, editingPlaceId]);
 
   useEffect(() => {
     savePlan({ days: planDays, legModes: planLegModes, legModesSemantics: "to", dayWindows: planDayWindows });
@@ -2311,6 +2318,51 @@ export default function Home() {
                                                   />
                                                 </label>
 
+                                                <div className="mt-3 flex items-center justify-between gap-2">
+                                                  <button
+                                                    type="button"
+                                                    className={[
+                                                      "h-9 rounded-xl border px-3 text-xs font-medium",
+                                                      editingPlaceId === p.id
+                                                        ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                                        : "border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50",
+                                                    ].join(" ")}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setMapCenter({ lat: p.lat, lon: p.lon });
+                                                      setSelectedPlaceId(p.id);
+                                                      setEditingPlaceId((cur) => (cur === p.id ? null : p.id));
+                                                    }}
+                                                    aria-label={t("editor.editLocation")}
+                                                    title={t("editor.editLocation")}
+                                                  >
+                                                    {t("editor.editLocation")}
+                                                  </button>
+
+                                                  {editingPlaceId === p.id ? (
+                                                    <button
+                                                      type="button"
+                                                      className="h-9 rounded-xl border border-neutral-200 bg-white px-3 text-xs text-neutral-700 hover:bg-neutral-50"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setEditingPlaceId(null);
+                                                      }}
+                                                      aria-label={t("editor.cancelLocationEdit")}
+                                                      title={t("editor.cancelLocationEdit")}
+                                                    >
+                                                      {t("editor.cancelLocationEdit")}
+                                                    </button>
+                                                  ) : null}
+                                                </div>
+
+                                                {editingPlaceId === p.id ? (
+                                                  <div className="mt-2 text-xs text-neutral-600">{t("editor.editLocationHint")}</div>
+                                                ) : (
+                                                  <div className="mt-2 text-xs text-neutral-500 tabular-nums">
+                                                    {p.lat.toFixed(5)}, {p.lon.toFixed(5)}
+                                                  </div>
+                                                )}
+
                                                 <label className="mt-3 block text-xs text-neutral-600">
                                                   {t("editor.description")}
                                                   <textarea
@@ -2816,6 +2868,14 @@ export default function Home() {
               routeSegments={effectiveRouteSegments}
               selectedMarkerId={selectedPlaceId ?? undefined}
               onMarkerClick={(id) => setSelectedPlaceId(id)}
+              draggableMarkerId={editingPlaceId ?? undefined}
+              onMarkerMove={(id, picked) => {
+                setPlaces((prev) => prev.map((p) => (p.id === id ? { ...p, lat: picked.lat, lon: picked.lon } : p)));
+                setMapCenter({ lat: picked.lat, lon: picked.lon });
+                setSelectedPlaceId(id);
+                setEditingPlaceId(null);
+                pushToast(t("toasts.locationUpdated"));
+              }}
               labels={{
                 unnamed: t("place.unnamed"),
                 kindHotel: t("place.hotel"),
